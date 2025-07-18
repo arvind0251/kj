@@ -2,25 +2,33 @@
 
 import logging, aiohttp, random
 from datetime import datetime, timezone, timedelta
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
 import mplfinance as mpf
-from config import BOT_TOKEN, CHANNEL_OR_USER_ID, FINNHUB_API_KEY, SYMBOL
+from config import BOT_TOKEN, CHANNEL_OR_USER_ID, TWELVEDATA_API_KEY, SYMBOL
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 logging.basicConfig(level=logging.INFO)
 
-# === Fetch 10 candles (10min) ===
-async def fetch_candle_data(symbol, count=10):
-    url = f"https://finnhub.io/api/v1/forex/candle?symbol={symbol}&resolution=1&count={count}&token={FINNHUB_API_KEY}"
+# === Fetch 10 candles (10min) from TwelveData ===
+async def fetch_candle_data(symbol, interval='1min', outputsize=10):
+    url = (
+        f"https://api.twelvedata.com/time_series"
+        f"?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVEDATA_API_KEY}"
+    )
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            return await resp.json()
+            data = await resp.json()
+            if "values" not in data:
+                print("🔎 API Response:", data)
+                return None
+            return data
 
-# === Generate signal ===
+# === Determine signal direction ===
 def calculate_direction(open_price, close_price):
     if close_price > open_price:
         return "CALL 🔼"
@@ -31,41 +39,47 @@ def calculate_direction(open_price, close_price):
 def get_mock_accuracy():
     return random.randint(85, 99)
 
-# === Create chart image ===
+# === Generate candle chart ===
 def generate_candle_chart(data):
     try:
-        df = pd.DataFrame({
-            'Open': data['o'],
-            'High': data['h'],
-            'Low': data['l'],
-            'Close': data['c']
-        }, index=pd.to_datetime([datetime.fromtimestamp(ts) for ts in data['t']]))
-        
-        df.index.name = 'Time'
-        mpf.plot(df, type='candle', style='charles', title='10-Min Candle', ylabel='Price',
+        values = data['values'][::-1]  # Latest last
+        df = pd.DataFrame(values)
+        df.rename(columns={
+            'datetime': 'Date',
+            'open': 'Open',
+            'high': 'High',
+            'low': 'Low',
+            'close': 'Close'
+        }, inplace=True)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df[['Open', 'High', 'Low', 'Close']] = df[['Open', 'High', 'Low', 'Close']].astype(float)
+
+        mpf.plot(df, type='candle', style='charles', title='1-Min Candles', ylabel='Price',
                  savefig='chart.png', tight_layout=True)
         return 'chart.png'
     except Exception as e:
-        print("🖼️ Chart generation error:", e)
+        print("Chart generation error:", e)
         return None
 
-# === Send signal to Telegram ===
+# === Signal sending logic ===
 async def send_signal():
     try:
-        data = await fetch_candle_data(SYMBOL, count=10)
-        print("🔎 API Response:", data)  # Debug log
+        data = await fetch_candle_data(SYMBOL)
 
-        if data.get("s") != "ok" or not data.get("c"):
-            print("❌ API error or empty candle data.")
+        if not data or "values" not in data:
+            print("❌ API error or no candle data.")
             return
 
-        open_price = data["o"][-1]
-        close_price = data["c"][-1]
+        latest = data["values"][0]
+        open_price = float(latest["open"])
+        close_price = float(latest["close"])
+
         direction = calculate_direction(open_price, close_price)
         accuracy = get_mock_accuracy()
 
         if direction == "NEUTRAL":
-            print("⏸️ No movement. Skipping.")
+            print("⏸️ No clear movement. Skipping.")
             return
 
         if accuracy >= 90:
@@ -82,7 +96,6 @@ async def send_signal():
                 f"🗓️ IST Time: <b>{time_str}</b>"
             )
 
-            # Generate chart
             chart_file = generate_candle_chart(data)
             if chart_file:
                 await bot.send_photo(CHANNEL_OR_USER_ID, photo=open(chart_file, 'rb'), caption=msg, parse_mode="HTML")
@@ -92,15 +105,30 @@ async def send_signal():
                 print(f"✅ Signal sent (no chart): {direction}, Acc: {accuracy}%")
         else:
             print(f"⚠️ Accuracy {accuracy}% < 90%. Skipped.")
-
     except Exception as e:
         print("🚨 Error in send_signal():", e)
 
-# === Run bot ===
+# === Message on bot startup ===
+async def send_startup_message():
+    await bot.send_message(
+        CHANNEL_OR_USER_ID,
+        "✅ <b>Trading Bot Started</b>\nBot is now live and will send signals every minute.",
+        parse_mode="HTML"
+    )
+
+# === /start command handler ===
+@dp.message(F.text == "/start")
+async def start_handler(message: Message):
+    await message.reply(
+        "👋 Welcome to the Quotex Trading Bot!\nYou'll receive 1-min signals based on live market data."
+    )
+
+# === Main loop ===
 async def main():
     scheduler.add_job(send_signal, "interval", minutes=1)
     scheduler.start()
-    print("🚀 Bot started with chart support.")
+    await send_startup_message()
+    print("🚀 Bot started with chart and TwelveData support.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
