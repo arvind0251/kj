@@ -46,15 +46,16 @@ def generate_candle_chart(data):
                  savefig='chart.png', tight_layout=True)
         return 'chart.png'
     except Exception as e:
-        print("Chart generation error:", e)
+        print("🖼️ Chart generation error:", e)
         return None
 
 # === Send signal to Telegram ===
 async def send_signal():
     try:
         data = await fetch_candle_data(SYMBOL, count=10)
+        print("🔎 API Response:", data)  # Debug log
 
-        if data["s"] != "ok" or not data["c"]:
+        if data.get("s") != "ok" or not data.get("c"):
             print("❌ API error or empty candle data.")
             return
 
