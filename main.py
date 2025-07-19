@@ -1,9 +1,7 @@
-# main.py
-
 import logging, aiohttp, random
 from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pandas as pd
 import mplfinance as mpf
@@ -36,6 +34,7 @@ def calculate_direction(open_price, close_price):
         return "PUT 🔽"
     return "NEUTRAL ⏸️"
 
+# === Random mock accuracy ===
 def get_mock_accuracy():
     return random.randint(85, 99)
 
@@ -59,7 +58,7 @@ def generate_candle_chart(data):
                  savefig='chart.png', tight_layout=True)
         return 'chart.png'
     except Exception as e:
-        print("Chart generation error:", e)
+        print("📉 Chart generation error:", e)
         return None
 
 # === Signal sending logic ===
@@ -98,7 +97,8 @@ async def send_signal():
 
             chart_file = generate_candle_chart(data)
             if chart_file:
-                await bot.send_photo(CHANNEL_OR_USER_ID, photo=open(chart_file, 'rb'), caption=msg, parse_mode="HTML")
+                photo = FSInputFile(chart_file)
+                await bot.send_photo(CHANNEL_OR_USER_ID, photo=photo, caption=msg, parse_mode="HTML")
                 print(f"✅ Signal & chart sent: {direction}, Acc: {accuracy}%")
             else:
                 await bot.send_message(CHANNEL_OR_USER_ID, msg, parse_mode="HTML")
@@ -108,7 +108,7 @@ async def send_signal():
     except Exception as e:
         print("🚨 Error in send_signal():", e)
 
-# === Message on bot startup ===
+# === Send startup message ===
 async def send_startup_message():
     await bot.send_message(
         CHANNEL_OR_USER_ID,
